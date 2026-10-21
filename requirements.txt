@@ -1,0 +1,5 @@
+pymupdf>=1.24
+Pillow>=10.0
+pyhanko[pkcs11,image-support]>=0.25
+sv-ttk>=2.6
+tkinterdnd2>=0.4
