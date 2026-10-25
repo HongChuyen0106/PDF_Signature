@@ -1,4 +1,4 @@
-"""UD Trucks PDF Signature - trình xem PDF đơn giản: đặt chữ ký (ảnh PNG) lên trang và ký số bằng USB token."""
+"""UD Trucks PDF Signature - trình xem PDF đơn giản: đặt chữ ký (ảnh PNG) lên trang và ký số bằng chứng chỉ số (.p12)."""
 
 import bisect
 import gc
@@ -262,7 +262,7 @@ class PdfSignApp:
             ("Mở file", self.open_pdf),
             ("Nhập chữ ký PNG", self.import_signature),
             ("Đặt chữ ký", lambda: self._set_placing(True)),
-            ("Ký số USB Token", self.sign_digital),
+            ("Ký số", self.sign_digital),
             ("Lưu file đã ký", self.save_pdf),
         )
         self.step_buttons = []
@@ -279,6 +279,9 @@ class PdfSignApp:
                 self.thumb = ttk.Label(card, text="Chưa có chữ ký", style="Muted.TLabel",
                                        anchor=tk.CENTER, padding=(6, 0))
                 self.thumb.pack()
+        self.btn_settings = ttk.Button(header, text="Cài đặt", style="Toolbutton",
+                                       command=self.open_settings, padding=(10, 6))
+        self.btn_settings.pack(side=tk.RIGHT)
         ttk.Separator(self.root).pack(side=tk.TOP, fill=tk.X)
 
         # ---- thanh trạng thái, chuyển trang và zoom (dưới)
@@ -393,6 +396,7 @@ class PdfSignApp:
         r.bind("<Control-equal>", lambda e: self.zoom_in())
         r.bind("<Control-minus>", lambda e: self.zoom_out())
         r.bind("<Control-0>", lambda e: self.fit_width())
+        r.bind("<Control-comma>", lambda e: self.open_settings())
         r.bind("<Prior>", lambda e: self.prev_page())
         r.bind("<Next>", lambda e: self.next_page())
         r.bind("<Left>", self._key_nav(self.prev_page))
@@ -545,12 +549,25 @@ class PdfSignApp:
         return flags > 0 and bool(flags & 1)
 
     # ---------------------------------------------------------- ký số
+    def open_settings(self):
+        """Mở mục Cài đặt: tạo chứng chỉ ký số mới hoặc nhập file .p12 đã có."""
+        try:
+            from settings_dialog import SettingsDialog, list_certs
+        except ImportError as ex:
+            messagebox.showerror("Thiếu thư viện", f"Không mở được mục Cài đặt:\n{ex}")
+            return
+        SettingsDialog(self.root)
+        n = len(list_certs())
+        self.status.set(f"Cài đặt: {n} chứng chỉ ký số." if n else
+                        "Cài đặt: chưa có chứng chỉ ký số.")
+
     def sign_digital(self):
         if not self.doc:
             return
         try:
-            import token_sign
-            from token_dialog import TokenSignDialog
+            import digital_sign
+            from settings_dialog import SettingsDialog, list_certs
+            from sign_dialog import SignDialog
         except ImportError as ex:
             messagebox.showerror("Thiếu thư viện", "Cần cài thư viện ký số:\n"
                                  f"pip install -r requirements.txt\n\n{ex}")
@@ -573,13 +590,26 @@ class PdfSignApp:
                          "Vẫn tiếp tục?"):
             return
 
+        # Chưa có chứng chỉ số: mở Cài đặt để tạo mới hoặc nhập file .p12
+        if not list_certs():
+            if not messagebox.askyesno(
+                    "Ký số", "Chưa có chứng chỉ ký số.\n\n"
+                             "Bấm \"Có\" để mở mục Cài đặt và tạo chứng chỉ mới "
+                             "(hoặc nhập file .p12 đã có).",
+                    icon=messagebox.WARNING):
+                return
+            SettingsDialog(self.root)
+            if not list_certs():
+                self.status.set("Ký số huỷ: chưa có chứng chỉ ký số.")
+                return
+
         with open(self.pdf_path, "rb") as f:
             pdf_bytes = f.read()
         page = self.doc[visible_p.page]
-        visible = token_sign.VisibleSignature(visible_p.page, to_pdf_box(page, visible_p.rect),
+        visible = digital_sign.VisibleSignature(visible_p.page, to_pdf_box(page, visible_p.rect),
                                               visible_p.signature.preview)
 
-        opts = TokenSignDialog(self.root, True).result
+        opts = SignDialog(self.root, True).result
         # dọn các biến Tk của hộp thoại ngay trên luồng giao diện, tránh bị dọn trong luồng ký
         gc.collect()
         if not opts:
@@ -595,11 +625,11 @@ class PdfSignApp:
         password = self.password
 
         def work():
-            token_sign.sign_with_token(pdf_bytes, out, opts["cert"], opts["pin"], visible,
-                                       opts["reason"], opts["location"], opts["tsa_url"], password)
+            signer = digital_sign.load_signer(opts["cert"]["path"], opts["password"])
+            digital_sign.sign_with_signer(pdf_bytes, out, signer, visible, opts["reason"],
+                                          opts["location"], opts["tsa_url"], password)
 
-        busy = BusyWindow(self.root, "Đang ký số, vui lòng chờ...\n"
-                                     "(Nếu token hiện hộp thoại riêng, hãy làm theo hướng dẫn.)")
+        busy = BusyWindow(self.root, "Đang ký số, vui lòng chờ...")
 
         def done(_value, error):
             busy.close()
